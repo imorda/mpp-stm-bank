@@ -1,4 +1,4 @@
-import kotlinx.atomicfu.*
+import kotlinx.atomicfu.atomic
 
 /**
  * Atomic block.
@@ -27,20 +27,37 @@ abstract class TxScope {
 /**
  * Transactional variable.
  */
-class TxVar<T>(initial: T)  {
+class TxVar<T>(initial: T) {
     private val loc = atomic(Loc(initial, initial, rootTx))
 
     /**
      * Opens this transactional variable in the specified transaction [tx] and applies
      * updating function [update] to it. Returns the updated value.
      */
+    @Suppress("UNCHECKED_CAST")
     fun openIn(tx: Transaction, update: (T) -> T): T {
-        // todo: FIXME: this implementation does not actually implement transactional update
         while (true) {
             val curLoc = loc.value
-            val curValue = curLoc.oldValue
-            val updValue = update(curValue)
-            if (loc.compareAndSet(curLoc, Loc(updValue, updValue, tx))) return updValue
+            val curValue = curLoc.valueIn(tx) { curOwner ->
+                if (tx.status == TxStatus.ABORTED) {
+                    throw AbortException
+                }
+
+                curOwner.abort()
+            }
+            if (curValue == TxStatus.ACTIVE) continue
+
+            val updValue = update(curValue as T)
+            val updLoc = Loc(curValue, updValue, tx)
+
+
+            if (loc.compareAndSet(curLoc, updLoc)) {
+                if (tx.status == TxStatus.ABORTED) {
+                    throw AbortException
+                }
+
+                return updValue
+            }
         }
     }
 }
@@ -52,7 +69,18 @@ private class Loc<T>(
     val oldValue: T,
     val newValue: T,
     val owner: Transaction
-)
+) {
+    fun valueIn(tx: Transaction, onActive: (Transaction) -> Unit): Any? =
+        if (owner == tx) newValue else
+            when (owner.status) {
+                TxStatus.ABORTED -> oldValue
+                TxStatus.COMMITTED -> newValue
+                TxStatus.ACTIVE -> {
+                    onActive(owner)
+                    TxStatus.ACTIVE
+                }
+            }
+}
 
 private val rootTx = Transaction().apply { commit() }
 
