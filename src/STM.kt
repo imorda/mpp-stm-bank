@@ -1,6 +1,10 @@
 import kotlinx.atomicfu.atomic
 
 /**
+ * @author Belousov Timofey
+ */
+
+/**
  * Atomic block.
  */
 fun <T> atomic(block: TxScope.() -> T): T {
